@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+
+# Data (хэрэв том файл байвал)
+backend/data/*.xlsx
+
+# IDE
+.vscode/
+.idea/

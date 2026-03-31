@@ -1,0 +1,29 @@
+{
+  "synced": true,
+  "reason": "upserted",
+  "rows": 428695,
+  "report": {
+    "source_rows": 1067371,
+    "dropped_missing_required": 4382,
+    "dropped_non_positive_quantity": 20261,
+    "dropped_non_positive_price": 1057,
+    "dropped_credit_invoice": 1,
+    "dropped_invalid_invoice_date": 0,
+    "rows_after_base_cleaning": 1041670,
+    "customer_id_missing_count": 236121,
+    "customer_id_invalid_count": 805549,
+    "country_missing_count": 0,
+    "country_invalid_count": 0,
+    "method": "iqr",
+    "quantity_outliers_removed": 111341,
+    "price_outliers_removed": 63593,
+    "total_outliers_removed": 174934,
+    "rows_after_cleaning": 1041670,
+    "rows_after_validation": 1041670,
+    "rows_after_window_filter": 452972,
+    "rows_after_outlier_filter": 866736,
+    "dropped_by_incremental_window": 413764,
+    "inserted_rows": 414564,
+    "updated_rows": 14131
+  }
+}

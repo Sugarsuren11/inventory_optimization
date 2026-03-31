@@ -1,0 +1,88 @@
+services:
+  db:
+    image: postgres:15
+    container_name: inventory_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password1234
+      POSTGRES_DB: inventory_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d inventory_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    container_name: inventory_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: inventory_backend
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://admin:password1234@db:5432/inventory_db
+      REDIS_URL: redis://redis:6379/0
+      DATA_FILE_PATH: /app/backend/data/online_retail_II.xlsx
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000
+      DEBUG: "false"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/').read()"]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: inventory_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://admin:password1234@db:5432/inventory_db
+      REDIS_URL: redis://redis:6379/0
+      DATA_FILE_PATH: /app/backend/data/online_retail_II.xlsx
+      PYTHONPATH: /app/backend
+    command: ["python", "-m", "celery", "-A", "worker.celery_app", "worker", "--loglevel=info", "--pool=solo"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: inventory_frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+
+volumes:
+  postgres_data:
