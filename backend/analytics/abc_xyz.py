@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from analytics.data_sync import sync_sales_to_postgres
 from analytics.mba_engine import MbaResult, run_mba
-from analytics.prophet_model import build_prophet_demand_forecast
+from analytics.prophet_model import build_prophet_demand_forecast, build_sku_demand_forecast
 from database import engine
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,7 @@ def _to_rule_rows(sales: pd.DataFrame) -> tuple[list[dict[str, Any]], MbaResult]
 def _build_reordering_items(
     products: pd.DataFrame,
     mba: MbaResult,
+    sku_demand: dict[str, float],
 ) -> list[dict[str, Any]]:
     sampled = _sample_per_category(
         products,
@@ -225,7 +226,17 @@ def _build_reordering_items(
     for idx, (_, row) in enumerate(sampled.iterrows()):
         desc      = str(row["Description"])
         lead_time = 5 if row["xyz"] == "X" else 8 if row["xyz"] == "Y" else 12
-        daily_demand = max(float(row["total_qty"]) / 365.0, 0.1)
+
+        # ── Prophet + MBA хослуулсан ROP ─────────────────────────────────
+        # Prophet SKU-түвшний таамаглал байвал ашиглана, эс бол түүхийн дундаж
+        historical_daily = max(float(row["total_qty"]) / 365.0, 0.1)
+        prophet_daily    = sku_demand.get(desc)
+        if prophet_daily is not None:
+            daily_demand   = prophet_daily
+            forecast_source = "prophet"
+        else:
+            daily_demand   = historical_daily
+            forecast_source = "historical"
 
         # ── ЗАСВАР Bug 3: Lift-д суурилсан динамик Safety Stock ──────────
         base_ss = daily_demand * lead_time * 0.5
@@ -288,6 +299,9 @@ def _build_reordering_items(
                 "ssReason":         ss_reason,
                 "liftFactor":       round(max_lift, 3),
                 "selected":         current_stock < dynamic_rop,
+                # Prophet + MBA хослуулсан ROP мэдээлэл
+                "forecastSource":       forecast_source,
+                "prophetDailyDemand":   round(daily_demand, 4),
             }
         )
 
@@ -397,8 +411,16 @@ def build_insights_payload(file_path: Path) -> dict[str, Any]:
 
     demand_forecast_chart, demand_summary = _build_demand_forecast(sales)
 
-    # Safety Stock динамик коэффициенттэй захиалгын жагсаалт
-    reordering_items = _build_reordering_items(products, mba)
+    # Prophet SKU-түвшний эрэлт — зөвхөн захиалгад орох SKU-д ажиллуулна
+    sampled_descriptions = _sample_per_category(
+        products,
+        per_category=_REORDER_PER_CATEGORY,
+        a_override=_REORDER_PER_A_CATEGORY,
+    )["Description"].tolist()
+    sku_demand = build_sku_demand_forecast(sales, sampled_descriptions)
+
+    # ROP = Prophet_daily × lead_time + MBA_dynamic_safety_stock
+    reordering_items = _build_reordering_items(products, mba, sku_demand)
 
     alerts = _build_alerts(reordering_items, mba.complementary_rows, mba.substitute_rows)
 

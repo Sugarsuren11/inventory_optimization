@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from prophet import Prophet
+
+# Prophet болон cmdstanpy-н дэлгэрэнгүй log-г унтраана
+logging.getLogger("prophet").setLevel(logging.WARNING)
+logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
 
 def build_prophet_demand_forecast(sales: pd.DataFrame) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -119,3 +124,72 @@ def build_prophet_demand_forecast(sales: pd.DataFrame) -> tuple[list[dict[str, A
 		"mape": round(mape, 1),
 	}
 	return chart, summary
+
+
+def build_sku_demand_forecast(
+    sales: pd.DataFrame,
+    descriptions: list[str],
+    *,
+    desc_col: str = "Description",
+    qty_col: str = "Quantity",
+    month_col: str = "Month",
+) -> dict[str, float]:
+    """
+    SKU тус бүрт Prophet ажиллуулж дараагийн сарын таамаглалыг өдрийн
+    эрэлт болгон хувиргаж буцаана.
+
+    Параметрүүд
+    ----------
+    sales        : цэвэрлэгдсэн борлуулалтын DataFrame
+    descriptions : forecast хийх бүтээгдэхүүний нэрийн жагсаалт
+    desc_col     : бүтээгдэхүүний нэрийн багана (default "Description")
+    qty_col      : тоо хэмжээний багана (default "Quantity")
+    month_col    : "YYYY-MM" форматтай сарын багана (default "Month")
+
+    Буцаах утга
+    -----------
+    dict[str, float]
+        {description: predicted_daily_demand}
+        Prophet амжилтгүй болсон SKU → түүхийн дундаж ашиглана
+    """
+    result: dict[str, float] = {}
+
+    for desc in descriptions:
+        sku_df = sales[sales[desc_col] == desc]
+
+        # Fallback: Prophet ажиллахгүй тохиолдолд
+        historical_daily = max(float(sku_df[qty_col].sum()) / 365.0, 0.1)
+
+        monthly = (
+            sku_df.groupby(month_col, as_index=False)
+            .agg(y=(qty_col, "sum"))
+        )
+        monthly["ds"] = pd.to_datetime(monthly[month_col] + "-01", errors="coerce")
+        monthly = (
+            monthly.dropna(subset=["ds"])
+            .sort_values("ds")
+            .reset_index(drop=True)
+        )
+
+        # Prophet-д хамгийн багадаа 3 цэг хэрэгтэй
+        if len(monthly) < 3:
+            result[desc] = historical_daily
+            continue
+
+        try:
+            model = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=False,
+                daily_seasonality=False,
+                interval_width=0.95,
+            )
+            model.fit(monthly[["ds", "y"]])
+            future = model.make_future_dataframe(periods=1, freq="MS", include_history=False)
+            forecast = model.predict(future)
+
+            next_month = max(0.0, float(forecast["yhat"].iloc[-1]))
+            result[desc] = max(next_month / 30.0, 0.1)
+        except Exception:
+            result[desc] = historical_daily
+
+    return result
