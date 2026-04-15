@@ -490,9 +490,10 @@ def _sync_products_to_db(reordering_items: list[dict]) -> None:
         to_insert = []
         for item in unique_items:
             if item["sku"] in existing_skus:
+                # current_stock-г дарж бичихгүй — confirm/adjust API-р тохируулагдсан
+                # нөөцийг хадгалахын тулд зөвхөн тооцоолсон талбаруудыг шинэчилнэ
                 session.query(models.Product).filter_by(sku=item["sku"]).update({
                     "name":           item["productName"],
-                    "current_stock":  item["currentStock"],
                     "dynamic_rop":    item["dynamicROP"],
                     "lead_time_days": item["leadTime"],
                     "unit_price":     item["unitCost"],
@@ -638,6 +639,29 @@ def build_insights_payload(file_path: Path) -> dict[str, Any]:
         _sync_products_to_db(reordering_items)
     except Exception as exc:
         logger.warning("_sync_products_to_db алдаа (үргэлжлүүлнэ): %s", exc)
+
+    # DB-с бодит current_stock-г уншиж reordering_items-г шинэчилнэ.
+    # confirm/adjust API дуудалтаар өөрчлөгдсөн нөөц simulation-г дарж
+    # хэрэглэгдэх тул энэ алхам ЗААВАЛ хийгдэх ёстой.
+    try:
+        import models as _models  # noqa: PLC0415
+        sku_list = [i["sku"] for i in reordering_items]
+        with SessionLocal() as _session:
+            db_stocks: dict[str, int] = {
+                r.sku: r.current_stock
+                for r in _session.query(
+                    _models.Product.sku,
+                    _models.Product.current_stock,
+                ).filter(
+                    _models.Product.sku.in_(sku_list)
+                ).all()
+            }
+        for item in reordering_items:
+            if item["sku"] in db_stocks:
+                item["currentStock"] = db_stocks[item["sku"]]
+                item["selected"] = item["currentStock"] < item["dynamicROP"]
+    except Exception as exc:
+        logger.warning("DB нөөц унших алдаа (simulation утгыг ашиглана): %s", exc)
 
     alerts = _build_alerts(reordering_items, mba.complementary_rows, mba.substitute_rows)
 
