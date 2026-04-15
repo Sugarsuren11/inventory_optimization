@@ -415,35 +415,62 @@ def _sync_products_to_db(reordering_items: list[dict]) -> None:
     """
     reordering жагсаалтаас products хүснэгтийг populate хийнэ.
     SKU-р upsert — байвал шинэчил, байхгүй бол шинээр нэм.
+    Давтагдсан SKU-г нэг удаа л боловсруулна.
     """
     import models  # circular import-аас зайлсхийхийн тулд дотор import хийнэ
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    # SKU-р dedup — нэг SKU давтагдвал эхнийхийг авна
+    seen: set[str] = set()
+    unique_items: list[dict] = []
+    for item in reordering_items:
+        if item["sku"] not in seen:
+            seen.add(item["sku"])
+            unique_items.append(item)
+
+    if not unique_items:
+        return
 
     now = datetime.now(timezone.utc)
     with SessionLocal() as session:
-        for item in reordering_items:
-            existing = session.query(models.Product).filter_by(sku=item["sku"]).first()
-            if existing:
-                existing.name          = item["productName"]
-                existing.current_stock = item["currentStock"]
-                existing.dynamic_rop   = item["dynamicROP"]
-                existing.lead_time_days = item["leadTime"]
-                existing.unit_price    = item["unitCost"]
-                existing.category      = item.get("category")
-                existing.updated_at    = now
+        # Аль хэдийн байгаа SKU-уудыг bulk-аар авна
+        existing_skus = {
+            r.sku
+            for r in session.query(models.Product.sku)
+            .filter(models.Product.sku.in_([i["sku"] for i in unique_items]))
+            .all()
+        }
+
+        to_insert = []
+        for item in unique_items:
+            if item["sku"] in existing_skus:
+                session.query(models.Product).filter_by(sku=item["sku"]).update({
+                    "name":           item["productName"],
+                    "current_stock":  item["currentStock"],
+                    "dynamic_rop":    item["dynamicROP"],
+                    "lead_time_days": item["leadTime"],
+                    "unit_price":     item["unitCost"],
+                    "category":       item.get("category"),
+                    "updated_at":     now,
+                })
             else:
-                session.add(
-                    models.Product(
-                        sku           = item["sku"],
-                        name          = item["productName"],
-                        current_stock = item["currentStock"],
-                        dynamic_rop   = item["dynamicROP"],
-                        lead_time_days = item["leadTime"],
-                        unit_price    = item["unitCost"],
-                        category      = item.get("category"),
-                        created_at    = now,
-                        updated_at    = now,
-                    )
-                )
+                to_insert.append({
+                    "sku":           item["sku"],
+                    "name":          item["productName"],
+                    "current_stock": item["currentStock"],
+                    "dynamic_rop":   item["dynamicROP"],
+                    "lead_time_days": item["leadTime"],
+                    "unit_price":    item["unitCost"],
+                    "category":      item.get("category"),
+                    "created_at":    now,
+                    "updated_at":    now,
+                })
+
+        if to_insert:
+            # ON CONFLICT DO NOTHING — race condition-оос сэргийлнэ
+            stmt = pg_insert(models.Product).values(to_insert).on_conflict_do_nothing(index_elements=["sku"])
+            session.execute(stmt)
+
         session.commit()
 
 
