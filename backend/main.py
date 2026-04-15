@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from time import time
@@ -6,13 +7,31 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import text
 import pandas as pd
-from database import engine
+from database import engine, SessionLocal
 import models
 from worker import run_analytics_engine
 from analytics import build_insights_payload
 from analytics.data_sync import sync_sales_to_postgres
+
+
+# ── Request body schemas (stock / order / alert endpoints) ───────────────────
+
+class _StockAdjustRequest(BaseModel):
+    sku: str
+    quantity_change: int   # + нэмэх, - хасах
+    reason: str = ""
+
+
+class _OrderConfirmItem(BaseModel):
+    sku: str
+    order_qty: int
+
+
+class _OrderConfirmRequest(BaseModel):
+    items: list[_OrderConfirmItem]
 
 
 # Өгөгдлийн сангийн хүснэгтүүдийг үүсгэх
@@ -410,5 +429,176 @@ def get_insights():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Шинжилгээ хийхэд алдаа гарлаа: {exc}")
+
+
+# ── Stock Management Endpoints ───────────────────────────────────────────────
+
+def _invalidate_insights_cache() -> None:
+    """Insights cache-г цэвэрлэнэ — дараагийн /insights дуудалт шинэ өгөгдөл авна."""
+    with _insights_cache_lock:
+        _insights_cache["payload"] = None
+
+
+@app.post("/api/v1/stock/adjust")
+def adjust_stock(body: _StockAdjustRequest):
+    """
+    Нөөцийн тохируулга — current_stock-г quantity_change-р өөрчилнэ.
+    Шинэ stock < dynamic_rop бол LOW_STOCK alert үүсгэнэ.
+    Шинэ stock >= dynamic_rop бол тухайн барааны LOW_STOCK alert-г resolve хийнэ.
+    """
+    with SessionLocal() as session:
+        product = session.query(models.Product).filter_by(sku=body.sku).first()
+        if product is None:
+            raise HTTPException(status_code=404, detail=f"SKU олдсонгүй: {body.sku}")
+
+        new_stock = product.current_stock + body.quantity_change
+        if new_stock < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Нөөц 0-с бага болохгүй. Одоогийн нөөц: {product.current_stock}",
+            )
+
+        product.current_stock = new_stock
+        product.updated_at = datetime.now(timezone.utc)
+
+        alert_created = False
+        dynamic_rop = product.dynamic_rop or 0
+
+        if new_stock < dynamic_rop:
+            # Давхардал шалгалт
+            existing = session.query(models.SmartAlert).filter_by(
+                product_id  = product.product_id,
+                alert_type  = "LOW_STOCK",
+                is_resolved = False,
+            ).first()
+            if not existing:
+                gap = dynamic_rop - new_stock
+                session.add(
+                    models.SmartAlert(
+                        product_id  = product.product_id,
+                        alert_type  = "LOW_STOCK",
+                        message     = f"ROP-оос {gap} нэгжээр бага байна. Яаралтай нөхөн захиалга шаардлагатай.",
+                        priority    = 1,
+                        is_resolved = False,
+                        created_at  = datetime.now(timezone.utc),
+                    )
+                )
+                alert_created = True
+        else:
+            # Stock сайн болсон тул unresolved LOW_STOCK alert-г resolve хийнэ
+            session.query(models.SmartAlert).filter_by(
+                product_id  = product.product_id,
+                alert_type  = "LOW_STOCK",
+                is_resolved = False,
+            ).update({"is_resolved": True})
+
+        session.commit()
+
+    _invalidate_insights_cache()
+
+    return {
+        "success":       True,
+        "product_id":    product.product_id,
+        "sku":           body.sku,
+        "new_stock":     new_stock,
+        "alert_created": alert_created,
+    }
+
+
+@app.post("/api/v1/orders/confirm")
+def confirm_orders(body: _OrderConfirmRequest):
+    """
+    Захиалга баталгаажуулах — бараа бүрийн current_stock-г order_qty-р нэмнэ.
+    Нөөц ROP-оос дээш гарсан бол LOW_STOCK alert-г resolve хийнэ.
+    """
+    if not body.items:
+        raise HTTPException(status_code=400, detail="items хоосон байна")
+
+    updated_products: list[dict[str, Any]] = []
+
+    with SessionLocal() as session:
+        for item in body.items:
+            if item.order_qty <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"order_qty эерэг байх ёстой (SKU: {item.sku})",
+                )
+
+            product = session.query(models.Product).filter_by(sku=item.sku).first()
+            if product is None:
+                raise HTTPException(status_code=404, detail=f"SKU олдсонгүй: {item.sku}")
+
+            product.current_stock += item.order_qty
+            product.updated_at = datetime.now(timezone.utc)
+
+            dynamic_rop = product.dynamic_rop or 0
+            if product.current_stock >= dynamic_rop:
+                session.query(models.SmartAlert).filter_by(
+                    product_id  = product.product_id,
+                    alert_type  = "LOW_STOCK",
+                    is_resolved = False,
+                ).update({"is_resolved": True})
+
+            updated_products.append({
+                "product_id":    product.product_id,
+                "sku":           product.sku,
+                "name":          product.name,
+                "new_stock":     product.current_stock,
+                "dynamic_rop":   dynamic_rop,
+                "order_qty":     item.order_qty,
+            })
+
+        session.commit()
+
+    _invalidate_insights_cache()
+
+    return {
+        "success":          True,
+        "confirmed_count":  len(updated_products),
+        "updated_products": updated_products,
+    }
+
+
+@app.patch("/api/v1/alerts/{alert_id}/resolve")
+def resolve_alert(alert_id: int):
+    """Alert-г гараар шийдвэрлэгдсэн гэж тэмдэглэнэ."""
+    with SessionLocal() as session:
+        alert = session.query(models.SmartAlert).filter_by(alert_id=alert_id).first()
+        if alert is None:
+            raise HTTPException(status_code=404, detail=f"Alert олдсонгүй: {alert_id}")
+
+        alert.is_resolved = True
+        session.commit()
+
+    return {"success": True, "alert_id": alert_id, "resolved": True}
+
+
+@app.get("/api/v1/alerts/active")
+def get_active_alerts():
+    """DB-д байгаа шийдвэрлэгдээгүй alert бүрийг priority-р эрэмбэлж буцаана."""
+    with SessionLocal() as session:
+        rows = (
+            session.query(models.SmartAlert, models.Product.sku, models.Product.name)
+            .join(models.Product, models.SmartAlert.product_id == models.Product.product_id)
+            .filter(models.SmartAlert.is_resolved == False)  # noqa: E712
+            .order_by(models.SmartAlert.priority, models.SmartAlert.created_at)
+            .all()
+        )
+
+    alerts = [
+        {
+            "alert_id":   r.SmartAlert.alert_id,
+            "product_id": r.SmartAlert.product_id,
+            "sku":        r.sku,
+            "name":       r.name,
+            "alert_type": r.SmartAlert.alert_type,
+            "message":    r.SmartAlert.message,
+            "priority":   r.SmartAlert.priority,
+            "created_at": r.SmartAlert.created_at.isoformat() if r.SmartAlert.created_at else None,
+        }
+        for r in rows
+    ]
+
+    return {"success": True, "alerts": alerts, "total": len(alerts)}
 
 

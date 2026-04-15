@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from sqlalchemy import text
 from analytics.data_sync import sync_sales_to_postgres
 from analytics.mba_engine import MbaResult, run_mba
 from analytics.prophet_model import build_prophet_demand_forecast, build_sku_demand_forecast
-from database import engine
+from database import engine, SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +411,114 @@ def _build_alerts(
     return alerts[:8]
 
 
+def _sync_products_to_db(reordering_items: list[dict]) -> None:
+    """
+    reordering жагсаалтаас products хүснэгтийг populate хийнэ.
+    SKU-р upsert — байвал шинэчил, байхгүй бол шинээр нэм.
+    """
+    import models  # circular import-аас зайлсхийхийн тулд дотор import хийнэ
+
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as session:
+        for item in reordering_items:
+            existing = session.query(models.Product).filter_by(sku=item["sku"]).first()
+            if existing:
+                existing.name          = item["productName"]
+                existing.current_stock = item["currentStock"]
+                existing.dynamic_rop   = item["dynamicROP"]
+                existing.lead_time_days = item["leadTime"]
+                existing.unit_price    = item["unitCost"]
+                existing.category      = item.get("category")
+                existing.updated_at    = now
+            else:
+                session.add(
+                    models.Product(
+                        sku           = item["sku"],
+                        name          = item["productName"],
+                        current_stock = item["currentStock"],
+                        dynamic_rop   = item["dynamicROP"],
+                        lead_time_days = item["leadTime"],
+                        unit_price    = item["unitCost"],
+                        category      = item.get("category"),
+                        created_at    = now,
+                        updated_at    = now,
+                    )
+                )
+        session.commit()
+
+
+def _sync_alerts_to_db(alerts: list[dict[str, Any]], reordering_items: list[dict[str, Any]]) -> None:
+    """
+    critical/warning alert-уудыг smart_alerts хүснэгтэд бичнэ.
+    Давхардлаас сэргийлж product_id + alert_type-р шалгана.
+    DB alert_id-г alert dict-д 'db_alert_id' талбараар нэмнэ.
+    """
+    import models  # circular import-аас зайлсхийхийн тулд дотор import хийнэ
+
+    # SKU → product_id хайлтын map
+    sku_to_id: dict[str, int] = {}
+    skus = [item["sku"] for item in reordering_items]
+    if not skus:
+        return
+
+    with SessionLocal() as session:
+        rows = session.query(models.Product.sku, models.Product.product_id).filter(
+            models.Product.sku.in_(skus)
+        ).all()
+        sku_to_id = {r.sku: r.product_id for r in rows}
+
+        # id-г alert dict-с sku рүү харгалзуулах map
+        id_to_sku = {item["id"]: item["sku"] for item in reordering_items}
+
+        now = datetime.now(timezone.utc)
+        for alert in alerts:
+            alert_id_str: str = alert.get("id", "")
+            # Зөвхөн critical/warning alert-уудыг DB-д хадгална
+            if alert["type"] not in ("critical", "warning"):
+                continue
+
+            # alert id-с reorder item id-г задал (жишээ: "critical-3" → "3")
+            parts = alert_id_str.split("-", 1)
+            item_id = parts[1] if len(parts) == 2 else None
+            if item_id is None:
+                continue
+
+            sku = id_to_sku.get(item_id)
+            if sku is None:
+                continue
+
+            product_id = sku_to_id.get(sku)
+            if product_id is None:
+                continue
+
+            alert_type = "LOW_STOCK" if alert["type"] == "critical" else "DEMAND_SPIKE"
+            priority   = 1 if alert["type"] == "critical" else 2
+
+            # Давхардал шалгалт
+            existing = session.query(models.SmartAlert).filter_by(
+                product_id  = product_id,
+                alert_type  = alert_type,
+                is_resolved = False,
+            ).first()
+
+            if existing:
+                alert["db_alert_id"] = existing.alert_id
+            else:
+                new_alert = models.SmartAlert(
+                    product_id  = product_id,
+                    alert_type  = alert_type,
+                    message     = alert["message"],
+                    priority    = priority,
+                    is_resolved = False,
+                    created_at  = now,
+                )
+                session.add(new_alert)
+                session.flush()  # alert_id авахын тулд flush хийнэ
+                alert["db_alert_id"] = new_alert.alert_id
+
+        session.commit()
+
+
 def build_insights_payload(file_path: Path) -> dict[str, Any]:
     sync_sales_to_postgres(file_path)
     sales = _load_sales_dataframe_from_db()
@@ -451,7 +560,19 @@ def build_insights_payload(file_path: Path) -> dict[str, Any]:
     # ROP = Prophet_daily × lead_time + MBA_dynamic_safety_stock
     reordering_items = _build_reordering_items(products, mba, sku_demand)
 
+    # Products хүснэгтийг reordering жагсаалтаас populate хийнэ (upsert)
+    try:
+        _sync_products_to_db(reordering_items)
+    except Exception as exc:
+        logger.warning("_sync_products_to_db алдаа (үргэлжлүүлнэ): %s", exc)
+
     alerts = _build_alerts(reordering_items, mba.complementary_rows, mba.substitute_rows)
+
+    # Alert-уудыг DB-д бичнэ (давхардалгүйгээр)
+    try:
+        _sync_alerts_to_db(alerts, reordering_items)
+    except Exception as exc:
+        logger.warning("_sync_alerts_to_db алдаа (үргэлжлүүлнэ): %s", exc)
 
     summary = {
         "total_products":       int(products.shape[0]),
