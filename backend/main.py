@@ -492,13 +492,14 @@ def adjust_stock(body: _StockAdjustRequest):
                 is_resolved = False,
             ).update({"is_resolved": True})
 
+        product_id = product.product_id  # session дуусахаас өмнө авна
         session.commit()
 
     _invalidate_insights_cache()
 
     return {
         "success":       True,
-        "product_id":    product.product_id,
+        "product_id":    product_id,
         "sku":           body.sku,
         "new_stock":     new_stock,
         "alert_created": alert_created,
