@@ -202,3 +202,23 @@ export interface BacktestingPayload {
 export async function fetchBacktesting(): Promise<BacktestingPayload> {
   return requestJson<BacktestingPayload>("/api/v1/backtesting");
 }
+
+export async function confirmOrders(
+  items: { sku: string; order_qty: number }[]
+): Promise<{ success: boolean; confirmed_count: number; updated_products: unknown[] }> {
+  return requestJson("/api/v1/orders/confirm", {
+    method: "POST",
+    body: JSON.stringify({ items }),
+  });
+}
+
+export async function adjustStock(
+  sku: string,
+  quantity_change: number,
+  reason = ""
+): Promise<{ success: boolean; new_stock: number; alert_created: boolean }> {
+  return requestJson("/api/v1/stock/adjust", {
+    method: "POST",
+    body: JSON.stringify({ sku, quantity_change, reason }),
+  });
+}
