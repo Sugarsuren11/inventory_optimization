@@ -2,7 +2,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 
 
-# ── Статистик ──────────────────────────────────────────────────────────────
 class StatisticValues(BaseModel):
     total_transactions: int
     total_items_sold: int
@@ -15,7 +14,6 @@ class StatisticsResponse(BaseModel):
     statistics: StatisticValues
 
 
-# ── Топ бүтээгдэхүүн ───────────────────────────────────────────────────────
 class TopProduct(BaseModel):
     product_id: str
     name: str
@@ -28,14 +26,12 @@ class TopProductsResponse(BaseModel):
     products: List[TopProduct]
 
 
-# ── Борлуулалтын чиг хандлага ──────────────────────────────────────────────
 class SalesTrendResponse(BaseModel):
     success: bool
     dates: List[str]
     values: List[float]
 
 
-# ── Бүтээгдэхүүний жагсаалт ───────────────────────────────────────────────
 class ProductSnapshot(BaseModel):
     id: str
     name: str
@@ -52,7 +48,6 @@ class ProductsResponse(BaseModel):
     products: List[ProductSnapshot]
 
 
-# ── Нөөц оновчлол ─────────────────────────────────────────────────────────
 class InventoryRecommendation(BaseModel):
     product_id: Optional[str]
     product_name: Optional[str]
@@ -72,18 +67,16 @@ class OptimizeInventoryResponse(BaseModel):
     recommendations: List[InventoryRecommendation]
 
 
-# ── Celery task ────────────────────────────────────────────────────────────
 class AnalyzeResponse(BaseModel):
     task_id: str
     message: str
 
 
-# ── Insights (ABC-XYZ + MBA + Forecast) ───────────────────────────────────
 class InsightsSummary(BaseModel):
     total_products: int
     mape: float
     mba_rules: int
-    substitute_rules: int  # build_insights_payload payload-д байгаа талбар
+    substitute_rules: int
     active_alerts: int
 
 
@@ -162,7 +155,7 @@ class InsightsResponse(BaseModel):
     summary: InsightsSummary
     abc_xyz_matrix: List[AbcXyzItem]
     market_basket_rules: List[MbaRule]
-    substitute_rules: List[MbaRule]  # Орлох барааны дүрмүүд (Lift < 1)
+    substitute_rules: List[MbaRule]
     demand_forecast: DemandForecast
     alerts: List[Alert]
     reordering: List[ReorderItem]

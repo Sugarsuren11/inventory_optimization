@@ -116,3 +116,89 @@ export async function triggerAnalyze(): Promise<{ task_id: string; message: stri
     body: JSON.stringify({}),
   });
 }
+
+export interface BacktestMonthly {
+  month: string;
+  actual: number;
+  predicted: number;
+  lower: number;
+  upper: number;
+  error_pct: number;
+}
+
+export interface BacktestValidatedRule {
+  itemA: string;
+  itemB: string;
+  train_lift: number;
+  test_lift: number | null;
+  lift_delta: number | null;
+  is_valid: boolean;
+  train_support: number;
+  train_confidence: number;
+}
+
+export interface BacktestStockoutDetail {
+  product: string;
+  category: string;
+  avg_daily: number;
+  cv: number;
+  lead_time: number;
+  eoq: number;
+  baseline_ss: number;
+  mba_ss: number;
+  ss_deviation_pct: number;
+  baseline_rop: number;
+  mba_rop: number;
+  rop_deviation_pct: number;
+  lift_factor: number;
+  baseline_stockout_days: number;
+  mba_stockout_days: number;
+  n_days: number;
+  achieved_sl_baseline: number;
+  achieved_sl_mba: number;
+  target_sl: number;
+}
+
+export interface BacktestingPayload {
+  cached: boolean;
+  split_info: {
+    train_start: string;
+    train_end: string;
+    test_start: string;
+    test_end: string;
+    train_rows: number;
+    test_rows: number;
+  };
+  prophet_evaluation: {
+    monthly_comparison: BacktestMonthly[];
+    mape: number;
+  };
+  mba_validation: {
+    total_train_rules: number;
+    complementary_rules_tested: number;
+    complementary_hit_rate: number;
+    substitute_rules_tested: number;
+    substitute_hit_rate: number;
+    lift_stability_pct: number;
+    top_validated_rules: BacktestValidatedRule[];
+    top_substitute_validated: BacktestValidatedRule[];
+  };
+  stockout_simulation: {
+    products_simulated: number;
+    baseline_stockouts: number;
+    mba_stockouts: number;
+    reduction_pct: number;
+    target_sl: number;
+    avg_achieved_sl_baseline: number;
+    avg_achieved_sl_mba: number;
+    avg_rop_deviation_pct: number;
+    avg_ss_deviation_pct: number;
+    products_meeting_target_base: number;
+    products_meeting_target_mba: number;
+    detail: BacktestStockoutDetail[];
+  };
+}
+
+export async function fetchBacktesting(): Promise<BacktestingPayload> {
+  return requestJson<BacktestingPayload>("/api/v1/backtesting");
+}

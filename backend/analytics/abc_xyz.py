@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +31,16 @@ ABC_DESC: dict[str, str] = {
 _REORDER_PER_CATEGORY = 2    # нийт дээд тал ~18 мөр (A ангилалд 3 хүртэл)
 _REORDER_PER_A_CATEGORY = 3  # A ангилалд илүү их харуулна
 
-# ── Lift-д суурилсан Safety Stock коэффициентүүд ──────────────────────────
-# Lift >= 1.5 : Нягт дагалдах бараа  → SS 20% нэмнэ
-# Lift 1–1.5  : Дагалдах бараа       → SS өөрчлөхгүй
-# Lift < 1.0  : Орлох бараа          → Inventory Pooling: SS 20% хасна
-_SS_BOOST_LIFT_THRESHOLD  = 1.5   # дагалдах нягт хамаарал
-_SS_BOOST_FACTOR          = 1.20  # +20%
-_SS_POOL_FACTOR           = 0.80  # –20% (орлох бараанд)
+# ── MBA Lift-д суурилсан шатлалт Safety Stock тохируулга ─────────────────
+# Lift утга их байх тусам хамт авах хандлага хүчтэй → нэг нь дуусвал
+# нөгөөгийнхөө борлуулалт мөн унадаг → SS-г пропорциональ нэмнэ.
+#
+# Lift > 3.0  : Маш хүчтэй хамаарал → SS +40%  (~98% SL)
+# Lift 2–3    : Хүчтэй хамаарал     → SS +30%  (~97% SL)
+# Lift 1.5–2  : Дунд хамаарал       → SS +20%  (~97% SL)
+# Lift 1–1.5  : Сул хамаарал        → SS +10%  (~96% SL)
+# Орлох бараа : Inventory Pooling    → SS –20%  (~92% SL)
+_SS_POOL_FACTOR = 0.80   # орлох бараанд хэрэглэх
 
 
 def _sample_per_category(
@@ -215,11 +219,7 @@ def _build_reordering_items(
     mba: MbaResult,
     sku_demand: dict[str, float],
 ) -> list[dict[str, Any]]:
-    sampled = _sample_per_category(
-        products,
-        per_category=_REORDER_PER_CATEGORY,
-        a_override=_REORDER_PER_A_CATEGORY,
-    ).reset_index(drop=True)
+    sampled = products.reset_index(drop=True)
 
     reordering: list[dict[str, Any]] = []
 
@@ -238,31 +238,60 @@ def _build_reordering_items(
             daily_demand   = historical_daily
             forecast_source = "historical"
 
-        # ── ЗАСВАР Bug 3: Lift-д суурилсан динамик Safety Stock ──────────
-        base_ss = daily_demand * lead_time * 0.5
+        # ── Стандарт Safety Stock: SS = Z × σ_d × √(L) ──────────────────
+        # Z = 1.65 → 95% үйлчилгээний түвшин (service level)
+        # σ_d = daily_demand × CV  (өдрийн эрэлтийн стандарт хазайлт)
+        # L   = lead_time (хоногоор)
+        _Z_SCORE = 1.65  # 95% SL
+        cv       = float(row["cv"])
+        sigma_d  = daily_demand * cv          # өдрийн эрэлтийн std
+        base_ss  = _Z_SCORE * sigma_d * math.sqrt(lead_time)
 
         max_lift       = mba.lift_map.get(desc, 1.0)
         has_substitute = desc in mba.substitute_map
 
-        if max_lift >= _SS_BOOST_LIFT_THRESHOLD:
-            # Нягт дагалдах бараа: SS нэмнэ (+20%)
-            # Учир нь нэг нь дуусахад нөгөөгийнхөө борлуулалт унах эрсдэл өндөр
-            safety_stock   = base_ss * _SS_BOOST_FACTOR
-            ss_reason      = f"Lift={max_lift:.2f} дагалдах → SS +20%"
+        # ── MBA Lift-д суурилсан шатлалт SS тохируулга ───────────────────
+        # Lift утга их байх тусам SS пропорциональ өсдөг — энэ нь системийн
+        # гол зорилго: MBA → динамик Safety Stock → сайжруулсан ROP
+        if max_lift > 3.0:
+            lift_factor  = 1.40
+            ss_reason    = f"Lift={max_lift:.2f} > 3.0 → SS +40% (~98% SL)"
+        elif max_lift >= 2.0:
+            lift_factor  = 1.30
+            ss_reason    = f"Lift={max_lift:.2f} ≥ 2.0 → SS +30% (~97% SL)"
+        elif max_lift >= 1.5:
+            lift_factor  = 1.20
+            ss_reason    = f"Lift={max_lift:.2f} ≥ 1.5 → SS +20% (~97% SL)"
+        elif max_lift > 1.0:
+            lift_factor  = 1.10
+            ss_reason    = f"Lift={max_lift:.2f} > 1.0 → SS +10% (~96% SL)"
         elif has_substitute:
-            # Орлох бараа байгаа: Inventory Pooling → SS бага (–20%)
-            # Учир нь нэг нь дуусахад хэрэглэгч орлох барааг авах тул
-            # нийт ангилалынхаа хэмжээнд нөөцлөхөд хангалттай
-            safety_stock   = base_ss * _SS_POOL_FACTOR
-            ss_reason      = f"Орлох бараатай → Pooling SS –20%"
+            # Орлох бараа: Inventory Pooling → SS бага байж болно
+            lift_factor  = _SS_POOL_FACTOR
+            ss_reason    = f"Орлох бараатай → Pooling SS –20% (~92% SL)"
         else:
-            safety_stock   = base_ss
-            ss_reason      = "Стандарт SS"
+            lift_factor  = 1.0
+            ss_reason    = f"Стандарт SS (Z=1.65, CV={cv:.2f}, 95% SL)"
 
-        dynamic_rop  = int(round(daily_demand * lead_time + safety_stock))
-        stock_factor = 0.55 + (idx % 4) * 0.15
+        safety_stock = base_ss * lift_factor
+
+        dynamic_rop   = int(round(daily_demand * lead_time + safety_stock))
+        stock_factor  = 0.55 + (idx % 4) * 0.15
         current_stock = int(max(1, round(dynamic_rop * stock_factor)))
-        suggested_qty = int(max(dynamic_rop * 2 - current_stock, 1))
+
+        # ── EOQ (Economic Order Quantity) ─────────────────────────────────
+        # EOQ = √(2 × D × S / H)
+        # D = жилийн эрэлт,  S = захиалгын зардал,  H = нэгжийн хадгалах зардал/жил
+        unit_cost    = max(float(row["unit_cost"]), 0.01)
+        order_cost   = 50.0                         # захиалга тутмын зардал (₮)
+        holding_rate = 0.25                         # жилийн хадгалах зардлын хувь
+        holding_cost = holding_rate * unit_cost
+        annual_demand = daily_demand * 365.0
+        eoq = max(
+            int(round(math.sqrt(2.0 * annual_demand * order_cost / holding_cost))),
+            1,
+        )
+        suggested_qty = eoq
 
         cv = float(row["cv"])
         if cv > 1.0:

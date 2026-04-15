@@ -14,6 +14,7 @@ from worker import run_analytics_engine
 from analytics import build_insights_payload
 from analytics.data_sync import sync_sales_to_postgres
 
+
 # Өгөгдлийн сангийн хүснэгтүүдийг үүсгэх
 models.Base.metadata.create_all(bind=engine)
 
@@ -26,8 +27,6 @@ _insights_cache: dict[str, Any] = {
     "generated_at": 0.0,
 }
 
-# ЗАСВАР Improvement 1: sync хийсэн mtime-г тусдаа cache-д хадгалж
-# дараагийн хүсэлтэд дахин sync дуудахаас сэргийлнэ
 _sync_cache: dict[str, Any] = {
     "last_mtime": None,
 }
@@ -42,7 +41,7 @@ _ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://lo
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=False,   # wildcard origins-тэй credentials=True нийцэхгүй (CORS spec)
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,7 +53,6 @@ def read_root():
 
 
 def _get_default_file_path() -> Path:
-    # DATA_FILE_PATH орчны хувьсагчийг ашиглана (docker-compose.yml-д тохируулсан)
     env_path = os.getenv("DATA_FILE_PATH")
     if env_path:
         return Path(env_path)
@@ -62,31 +60,23 @@ def _get_default_file_path() -> Path:
 
 
 def _sync_once_if_changed(file_path: Path) -> None:
-    """
-    ЗАСВАР Bug 5: sync_sales_to_postgres нь /statistics, /sales-trend, /top-products,
-    /products гэсэн бүх endpoint дуудах бүрт ажилладаг байсан.
-    Энэ функц файлын mtime өөрчлөгдсөн үед л sync хийнэ.
-
-    ✅ Fix 3: Exception үед last_mtime stuck болохгүй — try/except сул ашиглана.
-    Lock-г задладаа exception-д → thread-safe.
-    """
+    """Файлын mtime өөрчлөгдсөн үед л sync хийнэ."""
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Файл олдсонгүй: {file_path}")
 
     current_mtime = file_path.stat().st_mtime
 
-    # Эхлээд cache-г уншина
     with _sync_cache_lock:
         if _sync_cache["last_mtime"] == current_mtime:
             return
 
-    # ✅ Fix 3: Sync lock-оос гадуур хийнэ (удаан op), exception гарса ч last_mtime stuck болохгүй
+    # Sync lock-оос гадуур хийнэ — удаан операц тул
+    # TODO: consider async sync with background task queue
     try:
         sync_sales_to_postgres(file_path)
         with _sync_cache_lock:
-            _sync_cache["last_mtime"] = current_mtime  # ← амжилттай үед л update
+            _sync_cache["last_mtime"] = current_mtime
     except Exception as exc:
-        # last_mtime-г шинэчлэхгүй → дараагийн дуудалтад дахин sync оролдоно
         raise HTTPException(status_code=500, detail=f"Sync алдаа: {exc}")
 
 
@@ -420,3 +410,5 @@ def get_insights():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Шинжилгээ хийхэд алдаа гарлаа: {exc}")
+
+

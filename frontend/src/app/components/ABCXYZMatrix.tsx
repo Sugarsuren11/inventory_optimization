@@ -156,7 +156,7 @@ export function ABCXYZMatrix({
                 <div className="text-xs text-slate-600 mb-2">
                   {categoryInfo?.desc}
                 </div>
-                <div className="text-2xl text-slate-900 font-bold">
+                <div className="text-2xl text-slate-800">
                   {count}
                 </div>
                 <div className="text-xs text-slate-500 mt-1">

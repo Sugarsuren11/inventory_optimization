@@ -26,12 +26,9 @@ export default function Root() {
 
   const navItems = [
     { path: "/", label: "Dashboard", icon: BarChart3 },
+    { path: "/inventory", label: "Нөөцийн хяналт", icon: Package },
     { path: "/orders", label: "Захиалга", icon: ShoppingCart },
-    {
-      path: "/market-basket",
-      label: "MBA Шинжилгээ",
-      icon: Network,
-    },
+    { path: "/market-basket", label: "MBA Шинжилгээ", icon: Network },
   ];
 
   return (

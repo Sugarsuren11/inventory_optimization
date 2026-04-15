@@ -5,45 +5,29 @@ from sqlalchemy import (
 from database import Base
 
 
-# ---------------------------------------------------------------------------
-# 1. БҮТЭЭГДЭХҮҮН  (products)
-# ---------------------------------------------------------------------------
 class Product(Base):
-    """
-    Бүтээгдэхүүний үндсэн бүртгэл.
-    Зургийн схемтэй бүрэн нийцүүлсэн.
-    """
+    """Бүтээгдэхүүний үндсэн бүртгэл."""
     __tablename__ = "products"
 
-    product_id  = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    sku         = Column(String(50), unique=True, nullable=False, index=True)
-    name        = Column(String(255))
-    category    = Column(String(100))
-    unit_price  = Column(Numeric(12, 2))
+    product_id    = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    sku           = Column(String(50), unique=True, nullable=False, index=True)
+    name          = Column(String(255))
+    category      = Column(String(100))
+    unit_price    = Column(Numeric(12, 2))
     current_stock = Column(Integer, default=0)
-    dynamic_rop   = Column(Integer)          # Reorder Point (денормализацийн хуулбар)
+    dynamic_rop   = Column(Integer)
     lead_time_days = Column(Integer, default=7)
-    created_at  = Column(DateTime(timezone=True))
-    updated_at  = Column(DateTime(timezone=True))
+    created_at    = Column(DateTime(timezone=True))
+    updated_at    = Column(DateTime(timezone=True))
 
 
-# ---------------------------------------------------------------------------
-# 2. БОРЛУУЛАЛТЫН ТҮҮХ  (sales_history)
-#    — data_sync.py sales_transactions хүснэгтэд бичдэг тул
-#      SalesTransaction загварыг хэвээр үлдээж, нэмэлтээр
-#      sales_history хүснэгтийг нэмлээ.
-# ---------------------------------------------------------------------------
 class SalesTransaction(Base):
-    """
-    Excel-с татаж авсан хэрэглэгчийн гүйлгээний мөр бүр.
-    data_sync.py энэ хүснэгтэд бичдэг — өөрчлөхгүй.
-    """
+    """Excel-с татаж авсан гүйлгээний мөр бүр. data_sync.py энд бичдэг."""
     __tablename__ = "sales_transactions"
 
     id              = Column(Integer, primary_key=True, index=True)
-    transaction_key = Column(String, nullable=False)  # unique=True хасав: __table_args__ UniqueConstraint давхардаж 2 index үүсгэж байсан
+    transaction_key = Column(String, nullable=False)
     invoice         = Column(String, nullable=False)
-    # FK-г хасаж индекс хадгалсан (Bug 4 засвар)
     product_id      = Column(String, nullable=False, index=True)
     description     = Column(String)
     quantity        = Column(Float, nullable=False)
@@ -58,9 +42,7 @@ class SalesTransaction(Base):
 
 
 class SalesHistory(Base):
-    """
-    Нэгтгэгдсэн борлуулалтын түүх — зургийн схемийн sales_history хүснэгт.
-    """
+    """Нэгтгэгдсэн борлуулалтын түүх."""
     __tablename__ = "sales_history"
 
     sale_id        = Column(Integer, primary_key=True, autoincrement=True)
@@ -76,54 +58,35 @@ class SalesHistory(Base):
     )
 
 
-# ---------------------------------------------------------------------------
-# 3. НӨӨЦ ШИНЖИЛГЭЭ — ABC / XYZ  (inventory_analysis)
-# ---------------------------------------------------------------------------
 class InventoryAnalysis(Base):
-    """
-    Бүтээгдэхүүн бүрийн ABC-XYZ ангиллын үр дүн.
-    """
+    """Бүтээгдэхүүн бүрийн ABC-XYZ ангиллын үр дүн."""
     __tablename__ = "inventory_analysis"
 
-    id               = Column(Integer, primary_key=True, autoincrement=True)
-    product_id       = Column(Integer, nullable=False, index=True)
-    abc_class        = Column(String(1))          # A | B | C
-    xyz_class        = Column(String(1))          # X | Y | Z
-    combined_class   = Column(String(2))          # AX, BY гэх мэт
-    value_score      = Column(Numeric(5, 2))
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    product_id        = Column(Integer, nullable=False, index=True)
+    abc_class         = Column(String(1))
+    xyz_class         = Column(String(1))
+    combined_class    = Column(String(2))
+    value_score       = Column(Numeric(5, 2))
     variability_score = Column(Numeric(5, 2))
-    calculated_at    = Column(DateTime(timezone=True))
+    calculated_at     = Column(DateTime(timezone=True))
 
 
-# ---------------------------------------------------------------------------
-# 4. НӨӨЦ НӨХӨН ЗАХИАЛАХ  (inventory_reorder)
-# ---------------------------------------------------------------------------
 class InventoryReorder(Base):
-    """
-    Динамик ROP, захиалах хэмжээ болон улирлын мэдээлэл.
-    Зургийн схемд нийцүүлэн inventory_reorder хүснэгтийг ашиглана.
-    """
+    """Динамик ROP, захиалах хэмжээ болон улирлын мэдээлэл."""
     __tablename__ = "inventory_reorder"
 
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    product_id     = Column(Integer, nullable=False, unique=True, index=True)
-    lead_time      = Column(Integer, default=7)
-    dynamic_rop    = Column(Integer)
-    suggested_qty  = Column(Integer)
-    seasonality    = Column(String(50))
-    calculated_at  = Column(DateTime)         # timezone=False — зурагтай нийцүүлсэн
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    product_id    = Column(Integer, nullable=False, unique=True, index=True)
+    lead_time     = Column(Integer, default=7)
+    dynamic_rop   = Column(Integer)
+    suggested_qty = Column(Integer)
+    seasonality   = Column(String(50))
+    calculated_at = Column(DateTime)
 
 
-# ---------------------------------------------------------------------------
-# 5. MARKET BASKET ANALYSIS  (mba_rules)
-#    — worker.py AssociationRule загварыг ашигладаг тул
-#      хуучин хүснэгтийг хэвээр үлдааж, шинийг нэмлээ.
-# ---------------------------------------------------------------------------
 class AssociationRule(Base):
-    """
-    worker.py-с бичигддэг MBA дүрмүүд (association_rules хүснэгт).
-    Хэвээр үлдсэн — кодын нийцтэй байдлыг хангана.
-    """
+    """worker.py-с бичигддэг MBA дүрмүүд."""
     __tablename__ = "association_rules"
 
     id         = Column(Integer, primary_key=True, index=True)
@@ -135,18 +98,15 @@ class AssociationRule(Base):
 
 
 class MbaRule(Base):
-    """
-    Зургийн схемийн mba_rules хүснэгт.
-    product_id-р холбогддог тоон индексийг ашиглана.
-    """
+    """product_id-р холбогддог MBA дүрмүүд."""
     __tablename__ = "mba_rules"
 
-    rule_id      = Column(Integer, primary_key=True, autoincrement=True)
-    item_a_id    = Column(Integer, nullable=False, index=True)
-    item_b_id    = Column(Integer, nullable=False, index=True)
-    support      = Column(Numeric(6, 4))
-    confidence   = Column(Numeric(6, 4))
-    lift         = Column(Numeric(8, 2))
+    rule_id       = Column(Integer, primary_key=True, autoincrement=True)
+    item_a_id     = Column(Integer, nullable=False, index=True)
+    item_b_id     = Column(Integer, nullable=False, index=True)
+    support       = Column(Numeric(6, 4))
+    confidence    = Column(Numeric(6, 4))
+    lift          = Column(Numeric(8, 2))
     calculated_at = Column(DateTime(timezone=True))
 
     __table_args__ = (
@@ -154,22 +114,16 @@ class MbaRule(Base):
     )
 
 
-# ---------------------------------------------------------------------------
-# 6. ЭРЭЛТИЙН ТААМАГЛАЛ  (demand_forecasts)
-# ---------------------------------------------------------------------------
 class DemandForecast(Base):
-    """
-    Prophet AI моделийн ирээдүйн эрэлтийн таамаглал.
-    Зургийн схемтэй нийцүүлэн баганын нэрийг шинэчиллээ.
-    """
+    """Prophet моделийн ирээдүйн эрэлтийн таамаглал."""
     __tablename__ = "demand_forecasts"
 
     forecast_id   = Column(Integer, primary_key=True, autoincrement=True)
     product_id    = Column(Integer, nullable=False, index=True)
-    target_month  = Column(Date, nullable=False)   # Таамаглаж буй сар
-    predicted_qty = Column(Integer)                # yhat
-    lower_bound   = Column(Integer)                # yhat_lower
-    upper_bound   = Column(Integer)                # yhat_upper
+    target_month  = Column(Date, nullable=False)
+    predicted_qty = Column(Integer)
+    lower_bound   = Column(Integer)
+    upper_bound   = Column(Integer)
     calculated_at = Column(DateTime(timezone=True))
 
     __table_args__ = (
@@ -177,40 +131,29 @@ class DemandForecast(Base):
     )
 
 
-# ---------------------------------------------------------------------------
-# 7. УХААЛАГ АНХААРУУЛГА  (smart_alerts)
-# ---------------------------------------------------------------------------
 class SmartAlert(Base):
-    """
-    Системийн автомат анхааруулгууд (нөөц дуусч байна, эрэлт огцом өссөн гэх мэт).
-    """
+    """Системийн автомат анхааруулгууд."""
     __tablename__ = "smart_alerts"
 
-    alert_id   = Column(Integer, primary_key=True, autoincrement=True)
-    product_id = Column(Integer, nullable=False, index=True)
-    alert_type = Column(String(20))    # LOW_STOCK | OVERSTOCK | DEMAND_SPIKE гэх мэт
-    message    = Column(Text)
-    priority   = Column(Integer, default=1)   # 1 = өндөр, 3 = бага
+    alert_id    = Column(Integer, primary_key=True, autoincrement=True)
+    product_id  = Column(Integer, nullable=False, index=True)
+    alert_type  = Column(String(20))    # LOW_STOCK | OVERSTOCK | DEMAND_SPIKE
+    message     = Column(Text)
+    priority    = Column(Integer, default=1)   # 1 = өндөр, 3 = бага
     is_resolved = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True))
+    created_at  = Column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_smart_alerts_product_type", "product_id", "alert_type"),
     )
 
 
-# ---------------------------------------------------------------------------
-# 8. ДАТА СИНХРОНЧЛОЛЫН ТӨЛӨВ  (ingestion_state)
-#    — data_sync.py болон _sync_once_if_changed() ашигладаг, хэвээр үлдсэн.
-# ---------------------------------------------------------------------------
 class IngestionState(Base):
-    """
-    Файлын mtime болон сүүлийн sync хийсэн огноог хадгална.
-    """
+    """Файлын mtime болон сүүлийн sync хийсэн огноог хадгална."""
     __tablename__ = "ingestion_state"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    source_name     = Column(String, nullable=False, unique=True, index=True)
-    source_mtime    = Column(Float, nullable=False, default=0.0)
+    id               = Column(Integer, primary_key=True, index=True)
+    source_name      = Column(String, nullable=False, unique=True, index=True)
+    source_mtime     = Column(Float, nullable=False, default=0.0)
     max_invoice_date = Column(DateTime)
-    last_synced_at  = Column(DateTime)
+    last_synced_at   = Column(DateTime)
