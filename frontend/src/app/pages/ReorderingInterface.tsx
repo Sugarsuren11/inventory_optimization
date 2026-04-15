@@ -72,26 +72,26 @@ export default function ReorderingInterface() {
     }
   };
 
-  // ── Demo: Нөөц хасах (ROP-оос доош буулгах) ──────────────────────────────
+  // ── Demo: Нөөц хасах ──────────────────────────────────────────────────────
+  // Сонголтгүйгээр анхны 7 барааг ROP-оос 1 нэгжээр доош болтол хасна.
   const handleDemoReduce = async () => {
-    if (!selectedOrders.length) return;
     setReducing(true);
     setActionMsg(null);
     try {
+      const targets = orders.slice(0, 7);
       let done = 0;
-      for (const o of selectedOrders) {
-        // Нөөцийг ROP-ын 50%-д буулгана (тодорхой ROP-оос доош)
-        const target = Math.max(0, Math.floor(o.dynamicROP * 0.5));
-        const qty_change = target - o.currentStock;
-        if (qty_change < 0) {
+      for (const o of targets) {
+        const targetStock = Math.max(0, o.dynamicROP - 1); // ROP-оос 1 нэгж доош
+        if (o.currentStock > targetStock) {
+          const qty_change = targetStock - o.currentStock; // сөрөг
           await adjustStock(o.sku, qty_change, 'Demo: ROP тест');
           done++;
         }
       }
       await refresh();
       setActionMsg({
-        type: 'error', // улаан өнгөөр харуулж alert гарсныг онцолно
-        text: `⚠ ${done} барааны нөөц ROP-оос доош буулгасан. Шинэ alert-ууд үүслээ!`,
+        type: 'error',
+        text: `${done} барааны нөөц ROP-оос доош буулгасан. Шинэ alert-ууд үүслээ!`,
       });
     } catch (err) {
       setActionMsg({
@@ -400,7 +400,7 @@ export default function ReorderingInterface() {
               </div>
               <button
                 onClick={handleDemoReduce}
-                disabled={selectedOrders.length === 0 || confirming || reducing}
+                disabled={confirming || reducing}
                 className="w-full px-6 py-3 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white rounded-lg transition-all shadow disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm"
               >
                 {reducing ? (

@@ -676,7 +676,7 @@ def build_insights_payload(file_path: Path) -> dict[str, Any]:
         "mape":                 demand_summary["mape"],
         "mba_rules":            len(market_rows),
         "substitute_rules":     len(mba.substitute_rows),
-        "active_alerts":        len([a for a in alerts if a["type"] in ("critical", "warning")]),
+        "active_alerts":        len([a for a in alerts if a["type"] == "critical"]),
     }
 
     return {
