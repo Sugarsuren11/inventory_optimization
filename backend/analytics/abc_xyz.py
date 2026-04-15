@@ -41,7 +41,8 @@ _REORDER_PER_A_CATEGORY = 3  # A ангилалд илүү их харуулна
 # Lift 1.5–2  : Дунд хамаарал       → SS +20%  (~97% SL)
 # Lift 1–1.5  : Сул хамаарал        → SS +10%  (~96% SL)
 # Орлох бараа : Inventory Pooling    → SS –20%  (~92% SL)
-_SS_POOL_FACTOR = 0.80   # орлох бараанд хэрэглэх
+_SS_POOL_FACTOR = 0.80           # орлох бараанд хэрэглэх
+_SS_BOOST_LIFT_THRESHOLD = 1.5  # lift≥1.5 байвал MBA бараа ЗААВАЛ sample-д орно
 
 
 def _sample_per_category(
@@ -219,8 +220,43 @@ def _build_reordering_items(
     products: pd.DataFrame,
     mba: MbaResult,
     sku_demand: dict[str, float],
+    sales: pd.DataFrame,   # ← ШИНЭ: currentStock симуляцид хэрэглэнэ
 ) -> list[dict[str, Any]]:
-    sampled = products.reset_index(drop=True)
+    # 1. Ердийн sample (category тус бүрээс 2–3)
+    sampled = _sample_per_category(
+        products,
+        per_category=_REORDER_PER_CATEGORY,
+        a_override=_REORDER_PER_A_CATEGORY,
+    )
+
+    # 2. MBA lift≥1.5 байгаа бараануудыг цуглуулах
+    lift_products: set[str] = set()
+    for desc, lift_val in mba.lift_map.items():
+        if lift_val >= _SS_BOOST_LIFT_THRESHOLD:
+            lift_products.add(desc)
+
+    # 3. substitute_map-д байгаа бараануудыг нэмж оруулах
+    for desc in mba.substitute_map:
+        lift_products.add(desc)
+
+    # 4. Sample-д байхгүй MBA бараануудыг products-оос олж нэмэх (хамгийн өндөр lift-тэй 10)
+    sampled_descriptions: set[str] = set(sampled["Description"].tolist())
+    missing_mba = lift_products - sampled_descriptions
+
+    if missing_mba:
+        mba_rows = products[products["Description"].isin(missing_mba)].copy()
+        mba_rows["_lift"] = mba_rows["Description"].map(lambda d: mba.lift_map.get(d, 0.0))
+        mba_rows = mba_rows.sort_values("_lift", ascending=False).head(10).drop(columns=["_lift"])
+        sampled = (
+            pd.concat([sampled, mba_rows])
+            .drop_duplicates(subset=["Description"])
+            .reset_index(drop=True)
+        )
+
+    # Борлуулалтын сүүлийн өдрийг тооцоолох (currentStock симуляцид хэрэглэнэ)
+    sales = sales.copy()
+    sales["InvoiceDate_dt"] = pd.to_datetime(sales["InvoiceDate"], errors="coerce")
+    max_date = sales["InvoiceDate_dt"].max()
 
     reordering: list[dict[str, Any]] = []
 
@@ -276,9 +312,19 @@ def _build_reordering_items(
 
         safety_stock = base_ss * lift_factor
 
-        dynamic_rop   = int(round(daily_demand * lead_time + safety_stock))
-        stock_factor  = 0.55 + (idx % 4) * 0.15
-        current_stock = int(max(1, round(dynamic_rop * stock_factor)))
+        dynamic_rop = int(round(daily_demand * lead_time + safety_stock))
+
+        # ── Борлуулалтын түүхэд суурилсан currentStock симуляци ──────────
+        # Анхны нөөц: сүүлийн захиалга ирсэн гэж тооцож dynamic_rop × 1.5
+        # Тухайн lead_time хоногт зарагдсан тоо хэмжээг хасна
+        cutoff_date = max_date - pd.Timedelta(days=lead_time)
+        recent = sales[
+            (sales["Description"] == desc) &
+            (sales["InvoiceDate_dt"] > cutoff_date)
+        ]
+        recent_sold   = max(0.0, float(recent["Quantity"].sum()))
+        initial_stock = dynamic_rop * 1.5
+        current_stock = int(max(0, round(initial_stock - recent_sold)))
 
         # ── EOQ (Economic Order Quantity) ─────────────────────────────────
         # EOQ = √(2 × D × S / H)
@@ -585,7 +631,7 @@ def build_insights_payload(file_path: Path) -> dict[str, Any]:
     sku_demand = build_sku_demand_forecast(sales, sampled_descriptions)
 
     # ROP = Prophet_daily × lead_time + MBA_dynamic_safety_stock
-    reordering_items = _build_reordering_items(products, mba, sku_demand)
+    reordering_items = _build_reordering_items(products, mba, sku_demand, sales)
 
     # Products хүснэгтийг reordering жагсаалтаас populate хийнэ (upsert)
     try:
